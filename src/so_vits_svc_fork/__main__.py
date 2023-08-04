@@ -151,6 +151,7 @@ def gui():
     help="path to output dir",
 )
 @click.option("-s", "--speaker", type=str, default=None, help="speaker name")
+@click.option("--reference-path", type=click.Path(exists=True), default=None)
 @click.option(
     "-m",
     "--model-path",
@@ -234,6 +235,7 @@ def infer(
     recursive: bool,
     # svc config
     speaker: str,
+    reference_path: Path | None = None,
     cluster_model_path: Path | None = None,
     transpose: int = 0,
     auto_predict_f0: bool = False,
@@ -283,6 +285,7 @@ def infer(
         recursive=recursive,
         # svc config
         speaker=speaker,
+        reference_paths=reference_path,
         cluster_model_path=cluster_model_path,
         transpose=transpose,
         auto_predict_f0=auto_predict_f0,

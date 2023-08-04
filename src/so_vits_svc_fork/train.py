@@ -426,28 +426,36 @@ class VitsLightning(pl.LightningModule):
             pred_lf0,
             norm_lf0,
             lf0,
-        ) = self.net_g(c, f0, uv, spec, g=g, c_lengths=lengths, spec_lengths=lengths)
+            evec,
+            zp_temp
+        ) = self.net_g(c, f0, uv, spec, g=g, c_lengths=lengths, spec_lengths=lengths, return_more=True)
+        print('got result')
         y_mel = commons.slice_segments(
             mel,
             ids_slice,
             self.hparams.train.segment_size // self.hparams.data.hop_length,
         )
+        print('sliced mel', y_hat.shape, y_hat.max(), y_hat.min())
         y_hat_mel = mel_spectrogram_torch(y_hat.squeeze(1), self.hparams)
+        print('got mel spectrogram')
         y_mel = y_mel[..., : y_hat_mel.shape[-1]]
+        print('sliced mel spectrogram')
         y = commons.slice_segments(
             y,
             ids_slice * self.hparams.data.hop_length,
             self.hparams.train.segment_size,
         )
         y = y[..., : y_hat.shape[-1]]
+        print('sliced y')
 
         # generator loss
         y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.net_d(y, y_hat)
+        print('got discriminator result')
 
         with autocast(enabled=False):
+            print('before calc loss')
             # TODO penalize z_p l2 norm
             loss_mel = F.l1_loss(y_mel, y_hat_mel) * self.hparams.train.c_mel
-            # TODO pass
             loss_kl = (
                 kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * self.hparams.train.c_kl
             )
@@ -455,6 +463,12 @@ class VitsLightning(pl.LightningModule):
             loss_gen, losses_gen = generator_loss(y_d_hat_g)
             loss_lf0 = F.mse_loss(pred_lf0, lf0)
             loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl + loss_lf0
+            loss_squares = zp_temp
+            if evec is not None:
+                loss_squares += .02 * evec
+                # loss_squares = .6 * (.1 * evec + 1 * zp_temp)
+                print('loss squares', loss_gen_all.shape, evec.shape, loss_gen_all.mean().item(), loss_squares.mean().item(), evec.mean().item(), zp_temp.mean().item())
+            loss_gen_all += .6 * loss_squares.mean()
 
             # MB-iSTFT-VITS
             loss_subband = torch.tensor(0.0)

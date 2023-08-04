@@ -252,8 +252,7 @@ def _substitute_if_same_shape(to_: dict[str, Any], from_: dict[str, Any]) -> Non
             if not hasattr(to_[k], "shape"):
                 raise ValueError(f"Key {k} is not a tensor")
             if to_[k].shape == v.shape:
-                pass
-                # to_[k] = v
+                to_[k] = v
             else:
                 shape_missmatch.append((k, to_[k].shape, v.shape))
         elif isinstance(v, dict):
@@ -268,6 +267,7 @@ def _substitute_if_same_shape(to_: dict[str, Any], from_: dict[str, Any]) -> Non
                     assert isinstance(group, dict)
                     if len(group['params']) != len(group_to['params']):
                         is_same_shape = False
+                        print('got wrong shape', k, len(group['params']), len(group_to['params']))
                         break
                 if is_same_shape:
                     to_[k] = v

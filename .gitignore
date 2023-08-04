@@ -157,3 +157,6 @@ tests/**/*.yaml
 *.pt
 user_gui_presets.json
 .idea/
+configs/
+filelists/
+logs/

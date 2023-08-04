@@ -27,6 +27,7 @@ def infer(
     recursive: bool = False,
     # svc config
     speaker: int | str,
+    reference_paths: Path | str | Sequence[Path | str] = None,
     cluster_model_path: Path | str | None = None,
     transpose: int = 0,
     auto_predict_f0: bool = False,
@@ -49,6 +50,13 @@ def infer(
         raise ValueError(
             f"input_path and output_path must have same length, but got {len(input_path)} and {len(output_path)}"
         )
+    if reference_paths is not None:
+        if isinstance(reference_paths, (str, Path)):
+            reference_paths = [reference_paths]
+        if len(input_path) != len(reference_paths):
+            raise ValueError(
+                f"input_path and reference_paths must have same length, but got {len(input_path)} and {len(reference_paths)}"
+            )
 
     model_path = Path(model_path)
     config_path = Path(config_path)
@@ -56,9 +64,11 @@ def infer(
     input_path = [Path(p) for p in input_path]
     output_paths = []
     input_paths = []
+    ref_paths = []
 
-    for input_path, output_path in zip(input_path, output_path):
+    for p_i, (input_path, output_path) in enumerate(zip(input_path, output_path)):
         if input_path.is_dir():
+            assert reference_paths is None
             if not recursive:
                 raise ValueError(
                     f"input_path is a directory, but recursive is False: {input_path}"
@@ -70,6 +80,8 @@ def infer(
             continue
         input_paths.append(input_path)
         output_paths.append(output_path)
+        if reference_paths is not None:
+            ref_paths.append(reference_paths[p_i])
 
     cluster_model_path = Path(cluster_model_path) if cluster_model_path else None
     svc_model = Svc(
@@ -83,10 +95,12 @@ def infer(
 
     try:
         pbar = tqdm(list(zip(input_paths, output_paths)), disable=len(input_paths) == 1)
-        for input_path, output_path in pbar:
+        for p_i, (input_path, output_path) in enumerate(pbar):
             pbar.set_description(f"{input_path}")
             try:
                 audio, _ = librosa.load(str(input_path), sr=svc_model.target_sample)
+                ref_path = ref_paths[p_i] if ref_paths else None
+                ref_audio = librosa.load(ref_path, sr=svc_model.target_sample, mono=True)[0].astype(np.float32) if ref_path else None
             except Exception as e:
                 LOG.error(f"Failed to load {input_path}")
                 LOG.exception(e)
@@ -95,6 +109,7 @@ def infer(
             audio = svc_model.infer_silence(
                 audio.astype(np.float32),
                 speaker=speaker,
+                ref_audio=ref_audio,
                 transpose=transpose,
                 auto_predict_f0=auto_predict_f0,
                 cluster_infer_ratio=cluster_infer_ratio,

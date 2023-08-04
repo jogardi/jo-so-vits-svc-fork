@@ -178,7 +178,7 @@ class SynthesizerTrn(nn.Module):
             self.head1 = nn.Conv1d(gin_channels, gin_channels, kernel_size=1)
             self.head2 = nn.Conv1d(gin_channels, hidden_channels, kernel_size=1)
 
-    def forward(self, c, f0, uv, spec, g=None, c_lengths=None, spec_lengths=None):
+    def forward(self, c, f0, uv, spec, g=None, c_lengths=None, spec_lengths=None, return_more=False):
         g = self.emb_g(g).transpose(1, 2)
         # ssl prenet
         x_mask = torch.unsqueeze(commons.sequence_mask(c_lengths, c.size(2)), 1).to(
@@ -187,13 +187,20 @@ class SynthesizerTrn(nn.Module):
         x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1, 2)
 
         z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g)
-        language_invar_vec_mean = self.evec_mod2(self.evec_mod1(z), x_mask).mean(2).unsqueeze(-1)
 
-        DROP_PROB = .2
-        if self.enable_emotion and random() > DROP_PROB:
-            evec = torch.distributions.Normal(language_invar_vec_mean, .01).rsample()
-            g = F.normalize(g + self.head1(evec))
+        DROP_PROB = .5
+        use_emotion = self.enable_emotion and random() > DROP_PROB
+        # norms = None
+        language_invar_vec_mean = None
+        if use_emotion:
+            language_invar_vec_mean = self.evec_mod2(self.evec_mod1(z), spec_mask).mean(2).unsqueeze(-1)
+            # norms = language_invar_vec_mean.norm(dim=1)
+            # assert norms.shape == (language_invar_vec_mean.shape[0],)
+            evec = torch.distributions.Normal(language_invar_vec_mean, .05).rsample()
+            g = g + self.head1(evec)
             x = (x + self.head2(evec)) * x_mask
+        else:
+            evec = None
 
         # f0 predict
         lf0 = 2595.0 * torch.log10(1.0 + f0.unsqueeze(1) / 700.0) / 500
@@ -216,8 +223,7 @@ class SynthesizerTrn(nn.Module):
         else:
             o = self.dec(z_slice, g=g, f0=pitch_slice)
             o_mb = None
-        # TODO put z_ptemp where m_p is
-        return (
+        r = (
             o,
             o_mb,
             ids_slice,
@@ -227,6 +233,19 @@ class SynthesizerTrn(nn.Module):
             norm_lf0,
             lf0,
         )
+        if return_more:
+            if use_emotion:
+                ns = language_invar_vec_mean.square().sum(dim=1).squeeze(1)
+                r += (ns,)
+            else:
+                r += (None,)
+            print(f"{z_ptemp.shape=}")
+            ns2 = z_ptemp.square().sum(dim=1).mean(dim=1)
+            if use_emotion:
+                assert ns2.shape[0] == language_invar_vec_mean.shape[0]
+                assert ns2.shape == ns.shape, f'{ns2.shape} != {ns.shape}, {z_ptemp.shape=}, {language_invar_vec_mean.shape=}'
+            r += (ns2,)
+        return r
 
     def infer(self, c, f0, uv, g=None, noice_scale=0.35, predict_f0=False):
         c_lengths = (torch.ones(c.size(0)) * c.size(-1)).to(c.device)
@@ -235,6 +254,42 @@ class SynthesizerTrn(nn.Module):
             c.dtype
         )
         x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1, 2)
+
+        if predict_f0:
+            lf0 = 2595.0 * torch.log10(1.0 + f0.unsqueeze(1) / 700.0) / 500
+            norm_lf0 = so_vits_svc_fork.f0.normalize_f0(
+                lf0, x_mask, uv, random_scale=False
+            )
+            pred_lf0 = self.f0_decoder(x, norm_lf0, x_mask, spk_emb=g)
+            f0 = (700 * (torch.pow(10, pred_lf0 * 500 / 2595) - 1)).squeeze(1)
+
+        z_p, m_p, logs_p, c_mask = self.enc_p(
+            x, x_mask, f0=f0_to_coarse(f0), noice_scale=noice_scale
+        )
+        z = self.flow(z_p, c_mask, g=g, reverse=True)
+
+        # MB-iSTFT-VITS
+        if self.mb:
+            o, o_mb = self.dec(z * c_mask, g=g)
+        else:
+            o = self.dec(z * c_mask, g=g, f0=f0)
+        return o
+
+    def calc_g(self, g, spec, spec_lengths):
+        g = self.emb_g(g).transpose(1, 2)
+        z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g)
+        language_invar_vec_mean = self.evec_mod2(self.evec_mod1(z), spec_mask).mean(2).unsqueeze(-1)
+        evec = torch.distributions.Normal(language_invar_vec_mean, .01).rsample()
+        g = g + self.head1(evec)
+        return g, self.head2(evec)
+
+    def infer_with_evec(self, c, f0, uv, g, head2vec, noice_scale=0.35, predict_f0=False):
+        c_lengths = (torch.ones(c.size(0)) * c.size(-1)).to(c.device)
+        x_mask = torch.unsqueeze(commons.sequence_mask(c_lengths, c.size(2)), 1).to(
+            c.dtype
+        )
+        x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1, 2)
+        x = (x + head2vec) * x_mask
 
         if predict_f0:
             lf0 = 2595.0 * torch.log10(1.0 + f0.unsqueeze(1) / 700.0) / 500

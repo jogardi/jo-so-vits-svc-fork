@@ -14,6 +14,7 @@ from numpy import dtype, float32, ndarray
 
 import so_vits_svc_fork.f0
 from so_vits_svc_fork import cluster, utils
+from ..modules.mel_processing import spectrogram_torch
 
 from ..modules.synthesizers import SynthesizerTrn
 from ..utils import get_optimal_device
@@ -187,6 +188,7 @@ class Svc:
         speaker: int | str,
         transpose: int,
         audio: ndarray[Any, dtype[float32]],
+        ref_audio: ndarray[Any, dtype[float32]] | None = None,
         cluster_infer_ratio: float = 0,
         auto_predict_f0: bool = False,
         noise_scale: float = 0.4,
@@ -229,14 +231,32 @@ class Svc:
         # inference
         with torch.no_grad():
             with timer() as t:
-                audio = self.net_g.infer(
-                    c,
-                    f0=f0,
-                    g=sid,
-                    uv=uv,
-                    predict_f0=auto_predict_f0,
-                    noice_scale=noise_scale,
-                )[0, 0].data.float()
+                if ref_audio is None:
+                    audio = self.net_g.infer(
+                        c,
+                        f0=f0,
+                        g=sid,
+                        uv=uv,
+                        predict_f0=auto_predict_f0,
+                        noice_scale=noise_scale,
+                    )
+                else:
+                    spec = spectrogram_torch(torch.tensor(ref_audio, device=self.device).unsqueeze(0), self.hps)
+                    print('got spec shape', spec.shape, spec.device)
+                    assert spec.shape[0] == 1
+
+                    g1, g2 = self.net_g.calc_g(sid, spec, spec_lengths=torch.LongTensor([spec.shape[2]]).to(self.device))
+                    audio = self.net_g.infer_with_evec(
+                        c,
+                        f0=f0,
+                        uv=uv,
+                        g=g1,
+                        head2vec=g2,
+                        predict_f0=auto_predict_f0,
+                        noice_scale=noise_scale,
+
+                    )
+                audio = audio[0, 0].data.float()
             audio_duration = audio.shape[-1] / self.target_sample
             LOG.info(
                 f"Inference time: {t.elapsed:.2f}s, RTF: {t.elapsed / audio_duration:.2f}"
@@ -250,6 +270,7 @@ class Svc:
         *,
         # svc config
         speaker: int | str,
+        ref_audio: np.ndarray[Any, np.dtype[np.float32]] | None = None,
         transpose: int = 0,
         auto_predict_f0: bool = False,
         cluster_infer_ratio: float = 0,
@@ -301,6 +322,7 @@ class Svc:
                     speaker,
                     transpose,
                     audio_chunk_pad,
+                    ref_audio=ref_audio,
                     cluster_infer_ratio=cluster_infer_ratio,
                     auto_predict_f0=auto_predict_f0,
                     noise_scale=noise_scale,
