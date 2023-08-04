@@ -445,7 +445,9 @@ class VitsLightning(pl.LightningModule):
         y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.net_d(y, y_hat)
 
         with autocast(enabled=False):
+            # TODO penalize z_p l2 norm
             loss_mel = F.l1_loss(y_mel, y_hat_mel) * self.hparams.train.c_mel
+            # TODO pass
             loss_kl = (
                 kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * self.hparams.train.c_kl
             )

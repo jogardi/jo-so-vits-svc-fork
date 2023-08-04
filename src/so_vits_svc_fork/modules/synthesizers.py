@@ -53,7 +53,7 @@ class SynthesizerTrn(nn.Module):
         gen_istft_n_fft: int = 16,
         gen_istft_hop_size: int = 4,
         subbands: int = 4,
-        enable_emotion=False,
+        enable_emotion=True,
         **kwargs: Any,
     ):
         super().__init__()
@@ -169,10 +169,12 @@ class SynthesizerTrn(nn.Module):
         self.enable_emotion = enable_emotion
         if enable_emotion:
             wav_in_d = hidden_channels
-            self.evec_mod = nn.Sequential(
-                nn.Conv1d(wav_in_d, gin_channels, kernel_size=1),
-                modules.WN(gin_channels, gin_channels, 5, 1, 4),
-            )
+            # self.evec_mod = nn.Sequential(
+            #     nn.Conv1d(wav_in_d, gin_channels, kernel_size=1),
+            #     modules.WN(gin_channels, 5, 1, 4),
+            # )
+            self.evec_mod1 = nn.Conv1d(wav_in_d, gin_channels, kernel_size=1)
+            self.evec_mod2 = modules.WN(gin_channels, 5, 1, 4)
             self.head1 = nn.Conv1d(gin_channels, gin_channels, kernel_size=1)
             self.head2 = nn.Conv1d(gin_channels, hidden_channels, kernel_size=1)
 
@@ -185,7 +187,7 @@ class SynthesizerTrn(nn.Module):
         x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1, 2)
 
         z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g)
-        language_invar_vec_mean = self.evec_mod(z).mean(2).unsqueeze(-1)
+        language_invar_vec_mean = self.evec_mod2(self.evec_mod1(z), x_mask).mean(2).unsqueeze(-1)
 
         DROP_PROB = .2
         if self.enable_emotion and random() > DROP_PROB:
@@ -214,6 +216,7 @@ class SynthesizerTrn(nn.Module):
         else:
             o = self.dec(z_slice, g=g, f0=pitch_slice)
             o_mb = None
+        # TODO put z_ptemp where m_p is
         return (
             o,
             o_mb,
