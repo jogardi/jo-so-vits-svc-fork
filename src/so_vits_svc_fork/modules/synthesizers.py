@@ -1,5 +1,6 @@
 import warnings
 from logging import getLogger
+from random import random
 from typing import Any, Literal, Sequence
 
 import torch
@@ -7,7 +8,7 @@ from torch import nn
 
 import so_vits_svc_fork.f0
 from so_vits_svc_fork.f0 import f0_to_coarse
-from so_vits_svc_fork.modules import commons as commons
+from so_vits_svc_fork.modules import commons as commons, modules
 from so_vits_svc_fork.modules.decoders.f0 import F0Decoder
 from so_vits_svc_fork.modules.decoders.hifigan import NSFHifiGANGenerator
 from so_vits_svc_fork.modules.decoders.mb_istft import (
@@ -17,6 +18,7 @@ from so_vits_svc_fork.modules.decoders.mb_istft import (
 )
 from so_vits_svc_fork.modules.encoders import Encoder, TextEncoder
 from so_vits_svc_fork.modules.flows import ResidualCouplingBlock
+from torch.nn import functional as F
 
 LOG = getLogger(__name__)
 
@@ -51,6 +53,7 @@ class SynthesizerTrn(nn.Module):
         gen_istft_n_fft: int = 16,
         gen_istft_hop_size: int = 4,
         subbands: int = 4,
+        enable_emotion=False,
         **kwargs: Any,
     ):
         super().__init__()
@@ -163,6 +166,16 @@ class SynthesizerTrn(nn.Module):
         )
         self.emb_uv = nn.Embedding(2, hidden_channels)
 
+        self.enable_emotion = enable_emotion
+        if enable_emotion:
+            wav_in_d = hidden_channels
+            self.evec_mod = nn.Sequential(
+                nn.Conv1d(wav_in_d, gin_channels, kernel_size=1),
+                modules.WN(gin_channels, gin_channels, 5, 1, 4),
+            )
+            self.head1 = nn.Conv1d(gin_channels, gin_channels, kernel_size=1)
+            self.head2 = nn.Conv1d(gin_channels, hidden_channels, kernel_size=1)
+
     def forward(self, c, f0, uv, spec, g=None, c_lengths=None, spec_lengths=None):
         g = self.emb_g(g).transpose(1, 2)
         # ssl prenet
@@ -171,6 +184,15 @@ class SynthesizerTrn(nn.Module):
         )
         x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1, 2)
 
+        z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g)
+        language_invar_vec_mean = self.evec_mod(z).mean(2).unsqueeze(-1)
+
+        DROP_PROB = .2
+        if self.enable_emotion and random() > DROP_PROB:
+            evec = torch.distributions.Normal(language_invar_vec_mean, .01).rsample()
+            g = F.normalize(g + self.head1(evec))
+            x = (x + self.head2(evec)) * x_mask
+
         # f0 predict
         lf0 = 2595.0 * torch.log10(1.0 + f0.unsqueeze(1) / 700.0) / 500
         norm_lf0 = so_vits_svc_fork.f0.normalize_f0(lf0, x_mask, uv)
@@ -178,7 +200,6 @@ class SynthesizerTrn(nn.Module):
 
         # encoder
         z_ptemp, m_p, logs_p, _ = self.enc_p(x, x_mask, f0=f0_to_coarse(f0))
-        z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g)
 
         # flow
         z_p = self.flow(z, spec_mask, g=g)
